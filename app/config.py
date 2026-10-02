@@ -22,6 +22,23 @@ def _allowed_external_hosts() -> set[str]:
     }
 
 
+def gateway_token() -> str:
+    return os.getenv("LAB_GATEWAY_TOKEN", "").strip()
+
+
+def lab_request_headers(user: str | None = None) -> dict[str, str]:
+    headers: dict[str, str] = {}
+
+    token = gateway_token()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    if user:
+        headers["X-Lab-User"] = user
+
+    return headers
+
+
 def validate_lab_base_url(url: str) -> str:
     parsed = urlparse(url)
     host = (parsed.hostname or "").lower()
@@ -50,8 +67,11 @@ def validate_lab_base_url(url: str) -> str:
         raise ValueError("external staging LAB_BASE_URL must use https")
 
     if host not in _allowed_external_hosts():
+        raise ValueError("external host is not listed in LAB_ALLOWED_HOSTS")
+
+    if not gateway_token():
         raise ValueError(
-            "external host is not listed in LAB_ALLOWED_HOSTS"
+            "LAB_GATEWAY_TOKEN is required when LAB_EXTERNAL_TEST_MODE=1"
         )
 
     return url.rstrip("/")
