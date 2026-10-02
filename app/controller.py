@@ -5,7 +5,7 @@ from urllib.parse import urljoin
 
 import requests
 
-from .config import validate_lab_base_url
+from .config import lab_request_headers, validate_lab_base_url
 from .hls_lab import download_and_decrypt_hls, remux_ts_to_m4a
 from .mock_cdm import (
     create_license_challenge,
@@ -28,6 +28,7 @@ def verify_lab_identity(
 
     response = http.get(
         f"{base_url}/health",
+        headers=lab_request_headers(),
         timeout=10,
     )
     response.raise_for_status()
@@ -53,7 +54,7 @@ def run_hls_demo(
     user: str | None = None,
 ) -> bytes:
     base_url = verify_lab_identity(base_url)
-    headers = {"X-Lab-User": user} if user else None
+    headers = lab_request_headers(user)
     suffix = "?mode=secure" if secure else ""
 
     ts_bytes = download_and_decrypt_hls(
@@ -70,7 +71,7 @@ def run_mock_drm_demo(
     user: str | None = None,
 ) -> bytes:
     base_url = verify_lab_identity(base_url)
-    headers = {"X-Lab-User": user} if user else {}
+    headers = lab_request_headers(user)
 
     manifest_response = requests.get(
         f"{base_url}/mockdrm/manifest.mpd",
@@ -120,7 +121,7 @@ def buy_lab_entitlement(
     response = requests.post(
         f"{base_url}/pay",
         json={"content_id": content_id},
-        headers={"X-Lab-User": user},
+        headers=lab_request_headers(user),
         timeout=15,
     )
     response.raise_for_status()
