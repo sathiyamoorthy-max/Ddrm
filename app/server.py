@@ -20,6 +20,13 @@ from .mock_cdm import (
     create_license_response,
     verify_license_challenge,
 )
+from .ctf_lab import (
+    catalog as ctf_catalog_data,
+    ensure_ctf_assets,
+    load_episode_ciphertext,
+    load_episode_key_material,
+    vulnerable_token as ctf_vulnerable_token,
+)
 
 app = Flask(__name__)
 
@@ -183,6 +190,92 @@ def hls_segment(filename: str):
         return jsonify({"error": "not_found"}), 404
 
     return send_file(path, mimetype="video/mp2t")
+
+
+
+@app.get("/ctf/catalog")
+def ctf_catalog():
+    ensure_ctf_assets()
+    return jsonify(ctf_catalog_data())
+
+
+def _ctf_episode_exists(episode_id: int) -> bool:
+    return 1 <= episode_id <= len(ctf_catalog_data()["episodes"])
+
+
+def _ctf_valid_token(episode_id: int) -> bool:
+    return request.args.get("token") == ctf_vulnerable_token(episode_id)
+
+
+@app.post("/ctf/vuln/unlock/<int:episode_id>")
+def ctf_vulnerable_unlock(episode_id: int):
+    """
+    Intentionally vulnerable CTF endpoint:
+    every locked synthetic episode is issued a predictable playback token
+    without checking entitlement.
+    """
+    ensure_ctf_assets()
+    if not _ctf_episode_exists(episode_id):
+        return jsonify({"error": "episode_not_found"}), 404
+
+    return jsonify(
+        {
+            "unlocked": True,
+            "episode_id": episode_id,
+            "playback_token": ctf_vulnerable_token(episode_id),
+            "warning": "synthetic CTF vulnerability: entitlement omitted",
+        }
+    )
+
+
+@app.get("/ctf/vuln/media/<int:episode_id>")
+def ctf_vulnerable_media(episode_id: int):
+    ensure_ctf_assets()
+    if not _ctf_episode_exists(episode_id):
+        return jsonify({"error": "episode_not_found"}), 404
+    if not _ctf_valid_token(episode_id):
+        return jsonify({"error": "invalid_token"}), 403
+
+    return Response(
+        load_episode_ciphertext(episode_id),
+        mimetype="application/octet-stream",
+    )
+
+
+@app.get("/ctf/vuln/key/<int:episode_id>")
+def ctf_vulnerable_key(episode_id: int):
+    ensure_ctf_assets()
+    if not _ctf_episode_exists(episode_id):
+        return jsonify({"error": "episode_not_found"}), 404
+    if not _ctf_valid_token(episode_id):
+        return jsonify({"error": "invalid_token"}), 403
+
+    material = load_episode_key_material(episode_id)
+    return jsonify(
+        {
+            "episode_id": episode_id,
+            "key_b64": material["key_b64"],
+            "warning": "synthetic CTF vulnerability: raw key exposure",
+        }
+    )
+
+
+@app.get("/ctf/secure/media/<int:episode_id>")
+def ctf_secure_media(episode_id: int):
+    ensure_ctf_assets()
+    if not _ctf_episode_exists(episode_id):
+        return jsonify({"error": "episode_not_found"}), 404
+
+    _name, user = _lab_user()
+    content_id = f"ctf-episode-{episode_id:02d}"
+
+    if not _has_entitlement(user, content_id):
+        return jsonify({"error": "payment_required"}), 402
+
+    return Response(
+        load_episode_ciphertext(episode_id),
+        mimetype="application/octet-stream",
+    )
 
 
 @app.get("/mockdrm/manifest.mpd")
