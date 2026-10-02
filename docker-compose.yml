@@ -1,0 +1,24 @@
+services:
+  lab-server:
+    build: .
+    command: python -m app.server
+    environment:
+      PORT: "5000"
+    ports:
+      - "127.0.0.1:5000:5000"
+    volumes:
+      - lab-data:/app/data
+
+  telegram-bot:
+    build: .
+    command: python -m app.telegram_bot
+    env_file:
+      - .env
+    environment:
+      LAB_BASE_URL: http://lab-server:5000
+      LAB_USER: student
+    depends_on:
+      - lab-server
+
+volumes:
+  lab-data:
