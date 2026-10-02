@@ -5,7 +5,7 @@ from urllib.parse import urljoin
 
 import requests
 
-from .config import validate_lab_base_url
+from .config import lab_request_headers, validate_lab_base_url
 from .hls_lab import download_and_decrypt_hls, remux_ts_to_m4a
 from .mock_cdm import (
     create_license_challenge,
@@ -14,6 +14,38 @@ from .mock_cdm import (
     unwrap_license_key,
 )
 
+EXPECTED_PROJECT = "Unified DRM Cyber Lab"
+EXPECTED_SCOPE = "synthetic-local-content-only"
+
+
+def verify_lab_identity(
+    base_url: str,
+    *,
+    session: requests.Session | None = None,
+) -> str:
+    base_url = validate_lab_base_url(base_url)
+    http = session or requests.Session()
+
+    response = http.get(
+        f"{base_url}/health",
+        headers=lab_request_headers(),
+        timeout=10,
+    )
+    response.raise_for_status()
+    payload = response.json()
+
+    if payload.get("project") != EXPECTED_PROJECT:
+        raise RuntimeError(
+            "target refused: /health project marker does not match this lab"
+        )
+
+    if payload.get("scope") != EXPECTED_SCOPE:
+        raise RuntimeError(
+            "target refused: /health scope marker does not match the synthetic lab"
+        )
+
+    return base_url
+
 
 def run_hls_demo(
     base_url: str,
@@ -21,8 +53,8 @@ def run_hls_demo(
     secure: bool = False,
     user: str | None = None,
 ) -> bytes:
-    base_url = validate_lab_base_url(base_url)
-    headers = {"X-Lab-User": user} if user else None
+    base_url = verify_lab_identity(base_url)
+    headers = lab_request_headers(user)
     suffix = "?mode=secure" if secure else ""
 
     ts_bytes = download_and_decrypt_hls(
@@ -38,8 +70,8 @@ def run_mock_drm_demo(
     secure: bool = False,
     user: str | None = None,
 ) -> bytes:
-    base_url = validate_lab_base_url(base_url)
-    headers = {"X-Lab-User": user} if user else {}
+    base_url = verify_lab_identity(base_url)
+    headers = lab_request_headers(user)
 
     manifest_response = requests.get(
         f"{base_url}/mockdrm/manifest.mpd",
@@ -85,11 +117,11 @@ def buy_lab_entitlement(
     user: str,
     content_id: str,
 ) -> dict:
-    base_url = validate_lab_base_url(base_url)
+    base_url = verify_lab_identity(base_url)
     response = requests.post(
         f"{base_url}/pay",
         json={"content_id": content_id},
-        headers={"X-Lab-User": user},
+        headers=lab_request_headers(user),
         timeout=15,
     )
     response.raise_for_status()

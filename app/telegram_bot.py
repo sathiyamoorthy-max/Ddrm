@@ -7,11 +7,12 @@ from pathlib import Path
 import requests
 import telebot
 
-from .config import validate_lab_base_url
+from .config import lab_request_headers, validate_lab_base_url
 from .controller import (
     buy_lab_entitlement,
     run_hls_demo,
     run_mock_drm_demo,
+    verify_lab_identity,
 )
 
 BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
@@ -79,14 +80,14 @@ def start(message):
         message,
         (
             "🧪 Unified DRM Cyber Lab\n\n"
-            "/hlsdemo - local AES-128 HLS exposed-key demo\n"
-            "/cdmdemo - local mock CDM/license entitlement-bypass demo\n"
+            "/hlsdemo - AES-128 HLS lab demo\n"
+            "/cdmdemo - mock CDM/license lab demo\n"
             "/securecheck - patched endpoints reject attacker\n"
             "/legitdemo - server-side payment + authorized playback\n"
             "/compare - HLS vs mock CDM architecture\n"
-            "/reset - reset local credits/entitlements\n"
-            "/health - lab status\n\n"
-            "Real PocketFM/OTT/CDM targets are intentionally unsupported."
+            "/reset - reset lab credits/entitlements\n"
+            "/health - verify lab target identity\n\n"
+            "Local or explicitly authorized staging deployments of this lab only."
         ),
     )
 
@@ -97,14 +98,13 @@ def health(message):
         return
 
     try:
-        response = requests.get(
-            f"{LAB_BASE_URL}/health",
-            timeout=10,
+        verify_lab_identity(LAB_BASE_URL)
+        bot.reply_to(
+            message,
+            f"✅ Verified Unified DRM Cyber Lab target: {LAB_BASE_URL}",
         )
-        response.raise_for_status()
-        bot.reply_to(message, f"✅ {response.json()}")
     except Exception as exc:
-        bot.reply_to(message, f"❌ Lab unavailable: {exc}")
+        bot.reply_to(message, f"❌ Lab unavailable/refused: {exc}")
 
 
 @bot.message_handler(commands=["hlsdemo"])
@@ -114,14 +114,14 @@ def hls_demo(message):
 
     status = bot.reply_to(
         message,
-        "🔐 Local AES-128 HLS vulnerable flow running...",
+        "🔐 AES-128 HLS lab flow running...",
     )
 
     try:
         audio = run_hls_demo(LAB_BASE_URL)
         bot.edit_message_text(
             (
-                "⚠️ Local HLS key endpoint had no entitlement check.\n"
+                "⚠️ Lab HLS key endpoint had no entitlement check.\n"
                 "Bot fetched the lab key, decrypted HLS segments, "
                 "and remuxed the synthetic audio."
             ),
@@ -133,7 +133,7 @@ def hls_demo(message):
             audio,
             filename="hls_recovered.m4a",
             title="HLS AES-128 Lab Recovery",
-            caption="🧪 Synthetic local HLS sample",
+            caption="🧪 Synthetic HLS lab sample",
         )
     except Exception as exc:
         bot.edit_message_text(
@@ -150,14 +150,14 @@ def cdm_demo(message):
 
     status = bot.reply_to(
         message,
-        "🔐 Mock CDM/license vulnerable flow running...",
+        "🔐 Mock CDM/license lab flow running...",
     )
 
     try:
         audio = run_mock_drm_demo(LAB_BASE_URL)
         bot.edit_message_text(
             (
-                "⚠️ Local vulnerable license endpoint validated the mock "
+                "⚠️ Lab vulnerable license endpoint validated the mock "
                 "device challenge but skipped entitlement.\n"
                 "The wrapped synthetic content key was returned and the "
                 "lab audio was decrypted."
@@ -290,7 +290,7 @@ def compare(message):
             "Device concept: signed mock CDM challenge\n"
             "Media crypto: AES-GCM synthetic payload\n"
             "Failure demo: license endpoint skips entitlement\n\n"
-            "Both use only locally generated synthetic content."
+            "Both use only generated synthetic content."
         ),
     )
 
@@ -303,7 +303,7 @@ def reset(message):
     try:
         response = requests.post(
             f"{LAB_BASE_URL}/reset",
-            headers={"X-Lab-User": LAB_USER},
+            headers=lab_request_headers(LAB_USER),
             timeout=10,
         )
         response.raise_for_status()
