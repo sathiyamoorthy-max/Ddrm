@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+import hmac
 import os
-from pathlib import Path
 
 from flask import Flask, Response, jsonify, request, send_file
 
@@ -51,6 +51,21 @@ def _lab_user():
 
 def _has_entitlement(user: dict | None, content_id: str) -> bool:
     return bool(user and content_id in user["entitlements"])
+
+
+@app.before_request
+def enforce_gateway_token():
+    expected = os.getenv("LAB_GATEWAY_TOKEN", "").strip()
+    if not expected:
+        return None
+
+    supplied = request.headers.get("Authorization", "")
+    expected_header = f"Bearer {expected}"
+
+    if not hmac.compare_digest(supplied, expected_header):
+        return jsonify({"error": "invalid_lab_gateway_token"}), 401
+
+    return None
 
 
 @app.get("/health")
@@ -130,14 +145,15 @@ def hls_playlist():
 @app.get("/hls/key")
 def hls_insecure_key():
     """
-    Intentionally vulnerable local endpoint:
+    Intentionally vulnerable lab endpoint:
     the AES-128 key is returned without entitlement validation.
+    Overall staging access can still be protected by LAB_GATEWAY_TOKEN.
     """
     ensure_hls_assets()
     return Response(
         HLS_KEY_PATH.read_bytes(),
         mimetype="application/octet-stream",
-        headers={"X-Lab-Warning": "intentionally-exposed-local-key"},
+        headers={"X-Lab-Warning": "intentionally-exposed-lab-key"},
     )
 
 
@@ -203,7 +219,7 @@ def _validated_challenge():
 @app.post("/mockdrm/vuln-license")
 def vulnerable_mock_license():
     """
-    Intentionally vulnerable local endpoint:
+    Intentionally vulnerable lab endpoint:
     a valid mock device challenge is enough; entitlement is not checked.
     """
     ensure_mock_assets()
@@ -215,7 +231,7 @@ def vulnerable_mock_license():
         challenge,
         load_mock_content_key(),
     )
-    response["warning"] = "entitlement check intentionally omitted in local lab"
+    response["warning"] = "entitlement check intentionally omitted in lab"
     return jsonify(response)
 
 
