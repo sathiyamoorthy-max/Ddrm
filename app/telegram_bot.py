@@ -1,0 +1,321 @@
+from __future__ import annotations
+
+import os
+import tempfile
+from pathlib import Path
+
+import requests
+import telebot
+
+from .config import validate_lab_base_url
+from .controller import (
+    buy_lab_entitlement,
+    run_hls_demo,
+    run_mock_drm_demo,
+)
+
+BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
+LAB_BASE_URL = validate_lab_base_url(
+    os.getenv("LAB_BASE_URL", "http://127.0.0.1:5000")
+)
+LAB_USER = os.getenv("LAB_USER", "student")
+
+ALLOWED_USER_IDS = {
+    int(value.strip())
+    for value in os.getenv("ALLOWED_USER_IDS", "").split(",")
+    if value.strip().isdigit()
+}
+
+if not ALLOWED_USER_IDS:
+    raise RuntimeError(
+        "ALLOWED_USER_IDS is mandatory for this cybersecurity lab bot"
+    )
+
+bot = telebot.TeleBot(BOT_TOKEN)
+
+
+def _allowed(message) -> bool:
+    return bool(
+        message.from_user
+        and message.from_user.id in ALLOWED_USER_IDS
+    )
+
+
+def _guard(message) -> bool:
+    if _allowed(message):
+        return True
+    bot.reply_to(message, "⛔ இந்த lab bot private.")
+    return False
+
+
+def _send_audio_bytes(
+    chat_id: int,
+    data: bytes,
+    *,
+    filename: str,
+    title: str,
+    caption: str,
+) -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        path = Path(temp_dir) / filename
+        path.write_bytes(data)
+
+        with path.open("rb") as audio:
+            bot.send_audio(
+                chat_id,
+                audio,
+                title=title,
+                performer="Unified DRM Cyber Lab",
+                caption=caption,
+            )
+
+
+@bot.message_handler(commands=["start", "help"])
+def start(message):
+    if not _guard(message):
+        return
+
+    bot.reply_to(
+        message,
+        (
+            "🧪 Unified DRM Cyber Lab\n\n"
+            "/hlsdemo - local AES-128 HLS exposed-key demo\n"
+            "/cdmdemo - local mock CDM/license entitlement-bypass demo\n"
+            "/securecheck - patched endpoints reject attacker\n"
+            "/legitdemo - server-side payment + authorized playback\n"
+            "/compare - HLS vs mock CDM architecture\n"
+            "/reset - reset local credits/entitlements\n"
+            "/health - lab status\n\n"
+            "Real PocketFM/OTT/CDM targets are intentionally unsupported."
+        ),
+    )
+
+
+@bot.message_handler(commands=["health"])
+def health(message):
+    if not _guard(message):
+        return
+
+    try:
+        response = requests.get(
+            f"{LAB_BASE_URL}/health",
+            timeout=10,
+        )
+        response.raise_for_status()
+        bot.reply_to(message, f"✅ {response.json()}")
+    except Exception as exc:
+        bot.reply_to(message, f"❌ Lab unavailable: {exc}")
+
+
+@bot.message_handler(commands=["hlsdemo"])
+def hls_demo(message):
+    if not _guard(message):
+        return
+
+    status = bot.reply_to(
+        message,
+        "🔐 Local AES-128 HLS vulnerable flow running...",
+    )
+
+    try:
+        audio = run_hls_demo(LAB_BASE_URL)
+        bot.edit_message_text(
+            (
+                "⚠️ Local HLS key endpoint had no entitlement check.\n"
+                "Bot fetched the lab key, decrypted HLS segments, "
+                "and remuxed the synthetic audio."
+            ),
+            message.chat.id,
+            status.message_id,
+        )
+        _send_audio_bytes(
+            message.chat.id,
+            audio,
+            filename="hls_recovered.m4a",
+            title="HLS AES-128 Lab Recovery",
+            caption="🧪 Synthetic local HLS sample",
+        )
+    except Exception as exc:
+        bot.edit_message_text(
+            f"❌ HLS demo failed: {str(exc)[:1000]}",
+            message.chat.id,
+            status.message_id,
+        )
+
+
+@bot.message_handler(commands=["cdmdemo"])
+def cdm_demo(message):
+    if not _guard(message):
+        return
+
+    status = bot.reply_to(
+        message,
+        "🔐 Mock CDM/license vulnerable flow running...",
+    )
+
+    try:
+        audio = run_mock_drm_demo(LAB_BASE_URL)
+        bot.edit_message_text(
+            (
+                "⚠️ Local vulnerable license endpoint validated the mock "
+                "device challenge but skipped entitlement.\n"
+                "The wrapped synthetic content key was returned and the "
+                "lab audio was decrypted."
+            ),
+            message.chat.id,
+            status.message_id,
+        )
+        _send_audio_bytes(
+            message.chat.id,
+            audio,
+            filename="mock_cdm_recovered.mp3",
+            title="Mock CDM Lab Recovery",
+            caption="🧪 Synthetic mock license/CDM sample",
+        )
+    except Exception as exc:
+        bot.edit_message_text(
+            f"❌ Mock CDM demo failed: {str(exc)[:1000]}",
+            message.chat.id,
+            status.message_id,
+        )
+
+
+@bot.message_handler(commands=["securecheck"])
+def secure_check(message):
+    if not _guard(message):
+        return
+
+    results: list[str] = []
+
+    try:
+        run_hls_demo(
+            LAB_BASE_URL,
+            secure=True,
+            user="attacker",
+        )
+        results.append("❌ Secure HLS unexpectedly allowed attacker")
+    except requests.HTTPError as exc:
+        code = exc.response.status_code if exc.response is not None else "?"
+        results.append(f"✅ Secure HLS blocked attacker ({code})")
+    except Exception as exc:
+        results.append(f"⚠️ Secure HLS check error: {exc}")
+
+    try:
+        run_mock_drm_demo(
+            LAB_BASE_URL,
+            secure=True,
+            user="attacker",
+        )
+        results.append("❌ Secure mock license unexpectedly allowed attacker")
+    except requests.HTTPError as exc:
+        code = exc.response.status_code if exc.response is not None else "?"
+        results.append(f"✅ Secure mock license blocked attacker ({code})")
+    except Exception as exc:
+        results.append(f"⚠️ Secure mock check error: {exc}")
+
+    bot.reply_to(message, "\n".join(results))
+
+
+@bot.message_handler(commands=["legitdemo"])
+def legit_demo(message):
+    if not _guard(message):
+        return
+
+    try:
+        buy_lab_entitlement(
+            LAB_BASE_URL,
+            user=LAB_USER,
+            content_id="hls-paid",
+        )
+        buy_lab_entitlement(
+            LAB_BASE_URL,
+            user=LAB_USER,
+            content_id="mock-paid",
+        )
+
+        hls_audio = run_hls_demo(
+            LAB_BASE_URL,
+            secure=True,
+            user=LAB_USER,
+        )
+        mock_audio = run_mock_drm_demo(
+            LAB_BASE_URL,
+            secure=True,
+            user=LAB_USER,
+        )
+
+        bot.reply_to(
+            message,
+            (
+                "✅ Server-side entitlements created. "
+                "Both secure flows are now authorized."
+            ),
+        )
+
+        _send_audio_bytes(
+            message.chat.id,
+            hls_audio,
+            filename="authorized_hls.m4a",
+            title="Authorized HLS Lab Playback",
+            caption="✅ Secure HLS entitlement flow",
+        )
+        _send_audio_bytes(
+            message.chat.id,
+            mock_audio,
+            filename="authorized_mock.mp3",
+            title="Authorized Mock CDM Playback",
+            caption="✅ Secure mock license/CDM flow",
+        )
+
+    except Exception as exc:
+        bot.reply_to(message, f"❌ Legit demo failed: {str(exc)[:1000]}")
+
+
+@bot.message_handler(commands=["compare"])
+def compare(message):
+    if not _guard(message):
+        return
+
+    bot.reply_to(
+        message,
+        (
+            "HLS AES-128 LAB\n"
+            "Manifest: M3U8 + EXT-X-KEY\n"
+            "Key path: key URI\n"
+            "Crypto: AES-128-CBC per segment\n"
+            "Failure demo: key endpoint lacks entitlement\n\n"
+            "MOCK CDM/LICENSE LAB\n"
+            "Manifest: MPD + PSSH-like metadata\n"
+            "Key path: license response\n"
+            "Device concept: signed mock CDM challenge\n"
+            "Media crypto: AES-GCM synthetic payload\n"
+            "Failure demo: license endpoint skips entitlement\n\n"
+            "Both use only locally generated synthetic content."
+        ),
+    )
+
+
+@bot.message_handler(commands=["reset"])
+def reset(message):
+    if not _guard(message):
+        return
+
+    try:
+        response = requests.post(
+            f"{LAB_BASE_URL}/reset",
+            headers={"X-Lab-User": LAB_USER},
+            timeout=10,
+        )
+        response.raise_for_status()
+        bot.reply_to(message, "✅ Lab state reset.")
+    except Exception as exc:
+        bot.reply_to(message, f"❌ Reset failed: {exc}")
+
+
+if __name__ == "__main__":
+    print(f"Unified DRM Cyber Lab bot started; target={LAB_BASE_URL}")
+    bot.infinity_polling(
+        timeout=30,
+        long_polling_timeout=30,
+        skip_pending=True,
+    )
